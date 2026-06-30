@@ -55,8 +55,9 @@ def uefi():
     On macOS it ships with the Homebrew qemu formula; on Linux with AAVMF.
     Variables are volatile (no NVRAM store), which a cloud image doesn't need."""
     if MACOS:
-        out = subprocess.run(["brew", "--prefix", "qemu"],
-                             capture_output=True, text=True, check=True)
+        out = subprocess.run(
+            ["brew", "--prefix", "qemu"], capture_output=True, text=True, check=True
+        )
         return Path(out.stdout.strip()) / "share" / "qemu" / "edk2-aarch64-code.fd"
     return Path("/usr/share/AAVMF/AAVMF_CODE.fd")
 
@@ -100,24 +101,25 @@ def pid():
 
 @dataclass
 class Dep:
-    """A host dependency. `check` is true when it's already present; what proves
-    it present differs from the package name (e.g. qemu-img ships in qemu-utils),
-    and the providing package differs per platform."""
     check: Callable[[], object]  # truthy when already present
-    apt: str   # Debian/Ubuntu package
+    apt: str  # Debian/Ubuntu package
     brew: str  # Homebrew formula
 
 
 # The host dependencies needed to run a VM, each with its per-platform package.
 DEPS = [
-    Dep(lambda: shutil.which(QEMU),
-        "qemu-system-x86" if ARCH == "amd64" else "qemu-system-arm", "qemu"),
+    Dep(
+        lambda: shutil.which(QEMU),
+        "qemu-system-x86" if ARCH == "amd64" else "qemu-system-arm",
+        "qemu",
+    ),
     Dep(lambda: shutil.which("qemu-img"), "qemu-utils", "qemu"),
     Dep(lambda: shutil.which("xorriso"), "xorriso", "xorriso"),
     # arm64 guests boot via UEFI. Linux needs the AAVMF firmware package; on
     # macOS the Homebrew qemu formula already bundles the edk2 firmware.
-    Dep(lambda: MACOS or ARCH != "arm64" or uefi().exists(),
-        "qemu-efi-aarch64", "qemu"),
+    Dep(
+        lambda: MACOS or ARCH != "arm64" or uefi().exists(), "qemu-efi-aarch64", "qemu"
+    ),
 ]
 
 
@@ -126,11 +128,13 @@ def setup_deps():
     missing = [d for d in DEPS if not d.check()]
     if not missing:
         return
-    if MACOS:  # dict.fromkeys dedups (qemu provides several deps) and keeps order
+    if MACOS:
         system("brew", "install", *dict.fromkeys(d.brew for d in missing))
     else:
         system("sudo", "apt-get", "update")
-        system("sudo", "apt-get", "install", "-y", *dict.fromkeys(d.apt for d in missing))
+        system(
+            "sudo", "apt-get", "install", "-y", *dict.fromkeys(d.apt for d in missing)
+        )
 
 
 def setup_kvm():
@@ -151,8 +155,9 @@ def setup_disk():
         system("curl", "-fL", "-o", BASE, IMG_URL)
 
     if not DISK_IMG.exists():
-        system("qemu-img", "create", "-f", "qcow2", "-F", "qcow2",
-               "-b", BASE, DISK_IMG, DISK)
+        system(
+            "qemu-img", "create", "-f qcow2", "-F qcow2", f"-b {BASE}", DISK_IMG, DISK
+        )
 
 
 def setup_seed():
@@ -173,12 +178,18 @@ def setup_seed():
         f"      - {key}\n"
     )
     meta_data = VM_DIR / "meta-data"
-    meta_data.write_text(
-        f"instance-id: {HOSTNAME}\nlocal-hostname: {HOSTNAME}\n"
-    )
+    meta_data.write_text(f"instance-id: {HOSTNAME}\nlocal-hostname: {HOSTNAME}\n")
     # The NoCloud datasource requires the volume label to be "cidata".
-    system("xorriso", "-as", "genisoimage", "-output", SEED,
-           "-volid", "cidata", "-joliet", "-rock", user_data, meta_data)
+    system(
+        "xorriso",
+        "-as genisoimage",
+        f"-output {SEED}",
+        "-volid cidata",
+        "-joliet",
+        "-rock",
+        user_data,
+        meta_data,
+    )
 
 
 def setup():
@@ -202,18 +213,18 @@ def start():
         cpu = "host" if MACOS else "max"
         cmd = [
             QEMU,
-            "-name", HOSTNAME,
-            "-machine", f"type={machine},accel={accel}",
-            "-cpu", cpu,
-            "-smp", CPUS,
-            "-m", MEM,
-            "-display", "none",
-            "-serial", f"file:{CONSOLE}",
-            "-drive", f"if=virtio,format=qcow2,file={DISK_IMG}",
-            "-drive", f"if=virtio,format=raw,file={SEED}",
-            "-device", "virtio-net-pci,netdev=net0",
-            "-netdev", f"user,id=net0,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
-            "-pidfile", str(PIDFILE),
+            f"-name {HOSTNAME}",
+            f"-machine type={machine},accel={accel}",
+            f"-cpu {cpu}",
+            f"-smp {CPUS}",
+            f"-m {MEM}",
+            "-display none",
+            f"-serial file:{CONSOLE}",
+            f"-drive if=virtio,format=qcow2,file={DISK_IMG}",
+            f"-drive if=virtio,format=raw,file={SEED}",
+            "-device virtio-net-pci,netdev=net0",
+            f"-netdev user,id=net0,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
+            f"-pidfile {PIDFILE}",
             "-daemonize",
         ]
         if ARCH == "arm64":
@@ -255,21 +266,23 @@ def reset():
 
 def ssh():
     """Wait for the guest's sshd to come up, then open an interactive shell."""
-    target = ["-p", SSH_PORT, "-i", str(private_key()),
-              "-o", "StrictHostKeyChecking=no",
-              "-o", "UserKnownHostsFile=/dev/null",
-              # Key-only: sshd is up before cloud-init injects the key, so until
-              # it lands the server offers password auth. BatchMode keeps the
-              # probe from blocking on that prompt, so the loop waits instead.
-              "-o", "BatchMode=yes",
-              "-o", "LogLevel=ERROR",
-              f"{USER}@localhost"]
+    target = [
+        "-p",
+        SSH_PORT,
+        f"-i {private_key()}",
+        "-o StrictHostKeyChecking=no",
+        "-o UserKnownHostsFile=/dev/null",
+        "-o BatchMode=yes",
+        "-o LogLevel=ERROR",
+        f"{USER}@localhost",
+    ]
 
     print("Waiting for SSH...", flush=True)
     for _ in range(120):
         probe = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=2", *target, "true"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         if probe.returncode == 0:
             break
@@ -291,7 +304,10 @@ def main():
     }
     parser = argparse.ArgumentParser(description="Run an Ubuntu cloud image in QEMU.")
     parser.add_argument(
-        "command", nargs="?", default="start", choices=cmds,
+        "command",
+        nargs="?",
+        default="start",
+        choices=cmds,
         help="subcommand to run (default: start)",
     )
     cmds[parser.parse_args().command]()

@@ -9,4 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/
 
 # Setup Claude Code
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/claude.sh | bash
+
+# Extend the root partition to fill the disk (CloudLab)
+curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/cloudlab.py | sudo python3
 ```

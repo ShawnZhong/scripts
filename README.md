@@ -2,7 +2,7 @@ Setup scripts for a fresh Ubuntu machine.
 
 ```sh
 # Setup fish shell
-curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/fish.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/fish.sh)
 
 # Setup git
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/git.sh | bash

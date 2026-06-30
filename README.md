@@ -10,8 +10,10 @@ curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/
 # Setup Claude Code
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/claude.sh | bash
 
-# Extend the root partition to fill the disk (CloudLab)
-curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/cloudlab.py | sudo python3
+
+CloudLab repartition:
+```sh
+curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/repartition.py | sudo python3
 ```
 
 Run an Ubuntu cloud image in QEMU (data lives in `./vm`, SSH in after boot):

@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/
 
 # Setup Claude Code
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/claude.sh | bash
-
+```
 
 CloudLab repartition:
 ```sh

@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Callable
 
 RELEASE = "26.04"  # Ubuntu version
-CPUS = "2"
-MEM = "4096"  # MiB
 DISK = "20G"
 SSH_PORT = "2200"
 USER = "ubuntu"
@@ -30,6 +28,10 @@ ARCH, QEMU = {
 }.get(HOST) or sys.exit(f"Unsupported host architecture: {HOST}")
 
 KVM = Path("/dev/kvm")
+
+CPUS = os.cpu_count() or 1  # all host logical CPUs
+# Half of physical RAM, in MiB. SC_PHYS_PAGES works on both macOS and Linux.
+MEM = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2 // 1024**2
 
 VM_DIR = Path("vm").resolve()
 BASE = VM_DIR / f"ubuntu-{RELEASE}-server-cloudimg-{ARCH}.img"

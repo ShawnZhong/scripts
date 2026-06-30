@@ -20,4 +20,4 @@ done
 mkdir -p ~/.local/bin
 fish -c "fish_add_path ~/.local/bin"
 
-exec fish
+exec fish < /dev/tty

@@ -15,7 +15,7 @@ RELEASE = "26.04"  # Ubuntu version
 CPUS = "2"
 MEM = "4096"  # MiB
 DISK = "20G"
-SSH_PORT = "2222"
+SSH_PORT = "2200"
 USER = "ubuntu"
 HOSTNAME = "ubuntu-vm"
 
@@ -219,7 +219,7 @@ def start():
             "-drive", f"if=virtio,format=qcow2,file={DISK_IMG}",
             "-drive", f"if=virtio,format=raw,file={SEED}",
             "-device", "virtio-net-pci,netdev=net0",
-            "-netdev", f"user,id=net0,hostfwd=tcp::{SSH_PORT}-:22",
+            "-netdev", f"user,id=net0,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
             "-pidfile", str(PIDFILE),
             "-daemonize",
         ]

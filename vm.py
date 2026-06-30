@@ -83,15 +83,13 @@ class PidFile:
 
     @property
     def pid(self):
-        """The live PID, or None — clearing a missing, garbled, or stale file."""
+        """The live PID, or None. A stale file reads as None; qemu's -pidfile
+        takes a lock and overwrites it on the next start."""
         try:
             p = int(self.path.read_text())
         except (FileNotFoundError, ValueError):
             return None
-        if self.alive(p):
-            return p
-        self.path.unlink(missing_ok=True)
-        return None
+        return p if self.alive(p) else None
 
     def terminate(self, timeout=30):
         """SIGTERM the process, escalating to SIGKILL after `timeout` seconds,

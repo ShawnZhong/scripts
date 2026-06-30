@@ -36,8 +36,6 @@ DISK_IMG = VM_DIR / "disk.qcow2"
 SEED = VM_DIR / "seed.img"
 PIDFILE = VM_DIR / "qemu.pid"
 CONSOLE = VM_DIR / "console.log"
-# Writable per-VM copy of the arm64 UEFI variable store.
-NVRAM = VM_DIR / "efi-vars.fd"
 
 IMG_URL = (
     f"https://cloud-images.ubuntu.com/releases/{RELEASE}/release/"
@@ -53,15 +51,14 @@ def system(*cmd, check=True):
 
 
 def uefi():
-    """Return (code, vars_template) UEFI firmware paths for arm64 guests.
-    On macOS these ship with the Homebrew qemu formula; on Linux with AAVMF."""
+    """Return the arm64 UEFI firmware image, loaded via -bios to boot the guest.
+    On macOS it ships with the Homebrew qemu formula; on Linux with AAVMF.
+    Variables are volatile (no NVRAM store), which a cloud image doesn't need."""
     if MACOS:
         out = subprocess.run(["brew", "--prefix", "qemu"],
                              capture_output=True, text=True, check=True)
-        share = Path(out.stdout.strip()) / "share" / "qemu"
-        return share / "edk2-aarch64-code.fd", share / "edk2-arm-vars.fd"
-    return (Path("/usr/share/AAVMF/AAVMF_CODE.fd"),
-            Path("/usr/share/AAVMF/AAVMF_VARS.fd"))
+        return Path(out.stdout.strip()) / "share" / "qemu" / "edk2-aarch64-code.fd"
+    return Path("/usr/share/AAVMF/AAVMF_CODE.fd")
 
 
 def alive(p):
@@ -119,7 +116,7 @@ DEPS = [
     Dep(lambda: shutil.which("xorriso"), "xorriso", "xorriso"),
     # arm64 guests boot via UEFI. Linux needs the AAVMF firmware package; on
     # macOS the Homebrew qemu formula already bundles the edk2 firmware.
-    Dep(lambda: MACOS or ARCH != "arm64" or uefi()[0].exists(),
+    Dep(lambda: MACOS or ARCH != "arm64" or uefi().exists(),
         "qemu-efi-aarch64", "qemu"),
 ]
 
@@ -156,10 +153,6 @@ def setup_disk():
     if not DISK_IMG.exists():
         system("qemu-img", "create", "-f", "qcow2", "-F", "qcow2",
                "-b", BASE, DISK_IMG, DISK)
-
-    # arm64 needs a per-VM writable copy of the UEFI variable store to boot.
-    if ARCH == "arm64" and not NVRAM.exists():
-        shutil.copy(uefi()[1], NVRAM)
 
 
 def setup_seed():
@@ -224,11 +217,7 @@ def start():
             "-daemonize",
         ]
         if ARCH == "arm64":
-            # UEFI firmware: read-only code + this VM's writable variable store.
-            cmd += [
-                "-drive", f"if=pflash,format=raw,readonly=on,file={uefi()[0]}",
-                "-drive", f"if=pflash,format=raw,file={NVRAM}",
-            ]
+            cmd += ["-bios", str(uefi())]  # UEFI firmware to boot the guest
         system(*cmd)
 
     ssh()
@@ -259,7 +248,7 @@ def restart():
 def reset():
     """Wipe VM state (disk + seed) but keep the downloaded base image."""
     stop()
-    for f in (DISK_IMG, SEED, CONSOLE, NVRAM):
+    for f in (DISK_IMG, SEED, CONSOLE):
         f.unlink(missing_ok=True)
     setup()
 

@@ -16,6 +16,8 @@ for f in config.fish functions/fish_prompt.fish; do
   mkdir -p ~/.config/fish/"$(dirname "$f")"
   curl -fsSL "$base/$f" > ~/.config/fish/"$f"
 done
+
+mkdir -p ~/.local/bin
 fish -c "fish_add_path ~/.local/bin"
 
-exec fish < /dev/tty
+exec fish

@@ -4,6 +4,7 @@ import argparse
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -62,15 +63,54 @@ def uefi():
     return Path("/usr/share/AAVMF/AAVMF_CODE.fd")
 
 
-def alive(p):
-    """True if process p exists (portable replacement for /proc/<pid>)."""
-    try:
-        os.kill(p, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+class PidFile:
+    """A QEMU pidfile: liveness checks and process lifecycle, clearing the file
+    whenever it's missing, garbled, or points at a dead process."""
+
+    def __init__(self, path):
+        self.path = path
+
+    @staticmethod
+    def alive(p):
+        """True if process p exists (portable replacement for /proc/<pid>)."""
+        try:
+            os.kill(p, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
         return True
-    return True
+
+    @property
+    def pid(self):
+        """The live PID, or None — clearing a missing, garbled, or stale file."""
+        try:
+            p = int(self.path.read_text())
+        except (FileNotFoundError, ValueError):
+            return None
+        if self.alive(p):
+            return p
+        self.path.unlink(missing_ok=True)
+        return None
+
+    def terminate(self, timeout=30):
+        """SIGTERM the process, escalating to SIGKILL after `timeout` seconds,
+        then clear the file. Returns False if nothing was running."""
+        p = self.pid
+        if p is None:
+            return False
+        os.kill(p, signal.SIGTERM)
+        for _ in range(timeout):
+            if not self.alive(p):
+                break
+            time.sleep(1)
+        else:
+            os.kill(p, signal.SIGKILL)
+        self.path.unlink(missing_ok=True)
+        return True
+
+
+qemu = PidFile(PIDFILE)
 
 
 def pubkey():
@@ -86,17 +126,6 @@ def pubkey():
 
 def private_key():
     return pubkey().with_suffix("")
-
-
-def pid():
-    """Return the running qemu PID, or None."""
-    if not PIDFILE.exists():
-        return None
-    p = int(PIDFILE.read_text().strip())
-    if alive(p):
-        return p
-    PIDFILE.unlink()
-    return None
 
 
 @dataclass
@@ -202,7 +231,7 @@ def setup():
 
 
 def start():
-    if p := pid():
+    if p := qemu.pid:
         print(f"VM already running (pid {p})")
     else:
         setup()
@@ -235,20 +264,7 @@ def start():
 
 
 def stop():
-    p = pid()
-    if not p:
-        print("VM not running")
-        return
-    print(f"+ kill {p}", flush=True)
-    os.kill(p, 15)
-    for _ in range(30):
-        if not alive(p):
-            break
-        time.sleep(1)
-    else:
-        os.kill(p, 9)
-    if PIDFILE.exists():
-        PIDFILE.unlink()
+    print("VM stopped" if qemu.terminate() else "VM not running")
 
 
 def restart():

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sudo apt update && sudo apt install -y git
+if ! command -v git > /dev/null; then
+  sudo apt update && sudo apt install -y git
+fi
+
 git config --global user.name "ShawnZhong"
 git config --global user.email "github@shawnzhong.com"
 git config --global fetch.prune true

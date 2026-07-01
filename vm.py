@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-DISK = "20G"
+CPUS = os.cpu_count()
+MEM = 16384  # MB
+DISK = "64G"
 SSH_PORT = "2200"
 USER = "ubuntu"
 HOSTNAME = "ubuntu-vm"
@@ -25,10 +27,6 @@ ARCH, QEMU = {
     "aarch64": ("arm64", "qemu-system-aarch64"),
     "arm64": ("arm64", "qemu-system-aarch64"),
 }.get(HOST) or sys.exit(f"Unsupported host architecture: {HOST}")
-
-CPUS = os.cpu_count() or 1  # all host logical CPUs
-# Half of physical RAM, in MiB. SC_PHYS_PAGES works on both macOS and Linux.
-MEM = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2 // 1024**2
 
 IMG_URL = f"https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-{ARCH}.img"
 

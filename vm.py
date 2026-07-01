@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-RELEASE = "26.04"  # Ubuntu version
 DISK = "20G"
 SSH_PORT = "2200"
 USER = "ubuntu"
@@ -27,23 +26,18 @@ ARCH, QEMU = {
     "arm64": ("arm64", "qemu-system-aarch64"),
 }.get(HOST) or sys.exit(f"Unsupported host architecture: {HOST}")
 
-KVM = Path("/dev/kvm")
-
 CPUS = os.cpu_count() or 1  # all host logical CPUs
 # Half of physical RAM, in MiB. SC_PHYS_PAGES works on both macOS and Linux.
 MEM = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2 // 1024**2
 
+IMG_URL = f"https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-minimal-cloudimg-{ARCH}.img"
+
 VM_DIR = Path("vm").resolve()
-BASE = VM_DIR / f"ubuntu-{RELEASE}-server-cloudimg-{ARCH}.img"
+BASE = VM_DIR / Path(IMG_URL).name
 DISK_IMG = VM_DIR / "disk.qcow2"
 SEED = VM_DIR / "seed.img"
 PIDFILE = VM_DIR / "qemu.pid"
 CONSOLE = VM_DIR / "console.log"
-
-IMG_URL = (
-    f"https://cloud-images.ubuntu.com/releases/{RELEASE}/release/"
-    f"ubuntu-{RELEASE}-server-cloudimg-{ARCH}.img"
-)
 
 SSH_DIR = Path.home() / ".ssh"
 
@@ -172,6 +166,7 @@ def setup_kvm():
     accelerates with Hypervisor.framework, which needs no device permission."""
     if MACOS:
         return
+    KVM = Path("/dev/kvm")
     if KVM.exists() and not os.access(KVM, os.R_OK | os.W_OK):
         system("sudo", "chmod", "666", KVM)
     if not os.access(KVM, os.R_OK | os.W_OK):

@@ -30,7 +30,7 @@ CPUS = os.cpu_count() or 1  # all host logical CPUs
 # Half of physical RAM, in MiB. SC_PHYS_PAGES works on both macOS and Linux.
 MEM = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 2 // 1024**2
 
-IMG_URL = f"https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-minimal-cloudimg-{ARCH}.img"
+IMG_URL = f"https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-{ARCH}.img"
 
 VM_DIR = Path("vm").resolve()
 BASE = VM_DIR / Path(IMG_URL).name
@@ -180,7 +180,16 @@ def setup_disk():
 
     if not DISK_IMG.exists():
         system(
-            "qemu-img", "create", "-f qcow2", "-F qcow2", f"-b {BASE}", DISK_IMG, DISK
+            "qemu-img",
+            "create",
+            "-f",
+            "qcow2",
+            "-F",
+            "qcow2",
+            "-b",
+            BASE,
+            DISK_IMG,
+            DISK,
         )
 
 
@@ -206,9 +215,12 @@ def setup_seed():
     # The NoCloud datasource requires the volume label to be "cidata".
     system(
         "xorriso",
-        "-as genisoimage",
-        f"-output {SEED}",
-        "-volid cidata",
+        "-as",
+        "genisoimage",
+        "-output",
+        SEED,
+        "-volid",
+        "cidata",
         "-joliet",
         "-rock",
         user_data,
@@ -237,18 +249,30 @@ def start():
         cpu = "host" if MACOS else "max"
         cmd = [
             QEMU,
-            f"-name {HOSTNAME}",
-            f"-machine type={machine},accel={accel}",
-            f"-cpu {cpu}",
-            f"-smp {CPUS}",
-            f"-m {MEM}",
-            "-display none",
-            f"-serial file:{CONSOLE}",
-            f"-drive if=virtio,format=qcow2,file={DISK_IMG}",
-            f"-drive if=virtio,format=raw,file={SEED}",
-            "-device virtio-net-pci,netdev=net0",
-            f"-netdev user,id=net0,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
-            f"-pidfile {PIDFILE}",
+            "-name",
+            HOSTNAME,
+            "-machine",
+            f"type={machine},accel={accel}",
+            "-cpu",
+            cpu,
+            "-smp",
+            CPUS,
+            "-m",
+            MEM,
+            "-display",
+            "none",
+            "-serial",
+            f"file:{CONSOLE}",
+            "-drive",
+            f"if=virtio,format=qcow2,file={DISK_IMG}",
+            "-drive",
+            f"if=virtio,format=raw,file={SEED}",
+            "-device",
+            "virtio-net-pci,netdev=net0",
+            "-netdev",
+            f"user,id=net0,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
+            "-pidfile",
+            PIDFILE,
             "-daemonize",
         ]
         if ARCH == "arm64":
@@ -280,11 +304,16 @@ def ssh():
     target = [
         "-p",
         SSH_PORT,
-        f"-i {private_key()}",
-        "-o StrictHostKeyChecking=no",
-        "-o UserKnownHostsFile=/dev/null",
-        "-o BatchMode=yes",
-        "-o LogLevel=ERROR",
+        "-i",
+        private_key(),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "LogLevel=ERROR",
         f"{USER}@localhost",
     ]
 

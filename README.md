@@ -1,13 +1,17 @@
 Setup scripts for a fresh Ubuntu machine.
 
+Setup fish shell:
 ```sh
-# Setup fish shell
 bash <(curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/fish.sh)
+```
 
-# Setup git
+Setup git
+```sh
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/git.sh | bash
+```
 
-# Setup Claude Code
+Setup Claude Code
+```sh
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/claude.sh | bash
 ```
 

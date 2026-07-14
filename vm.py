@@ -277,8 +277,6 @@ def start():
             cmd += ["-bios", str(uefi())]  # UEFI firmware to boot the guest
         system(*cmd)
 
-    ssh()
-
 
 def stop():
     print("VM stopped" if qemu.terminate() else "VM not running")
@@ -336,6 +334,7 @@ def main():
     cmds = {
         "setup": setup,
         "start": start,
+        "ssh": ssh,
         "stop": stop,
         "restart": restart,
         "reset": reset,
@@ -344,11 +343,15 @@ def main():
     parser.add_argument(
         "command",
         nargs="?",
-        default="start",
         choices=cmds,
-        help="subcommand to run (default: start)",
+        help="subcommand to run (default: start, then ssh)",
     )
-    cmds[parser.parse_args().command]()
+    command = parser.parse_args().command
+    if command is None:
+        start()
+        ssh()
+    else:
+        cmds[command]()
 
 
 if __name__ == "__main__":

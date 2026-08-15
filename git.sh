@@ -9,5 +9,5 @@ git config --global user.name "ShawnZhong"
 git config --global user.email "github@shawnzhong.com"
 git config --global fetch.prune true
 git config --global core.editor "nano"
-git config --global pull.ff only
+git config --global core.mergeoptions "--no-edit"
 git config --global push.autoSetupRemote true

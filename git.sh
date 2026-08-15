@@ -10,4 +10,5 @@ git config --global user.email "github@shawnzhong.com"
 git config --global fetch.prune true
 git config --global core.editor "nano"
 git config --global core.mergeoptions "--no-edit"
+git config --global rebase.autoStash true
 git config --global push.autoSetupRemote true

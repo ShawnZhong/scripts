@@ -8,9 +8,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 CPUS = os.cpu_count()
 MEM = 16384  # MB
@@ -57,52 +55,42 @@ def uefi():
     return Path("/usr/share/AAVMF/AAVMF_CODE.fd")
 
 
-class PidFile:
-    """A QEMU pidfile: liveness checks and process lifecycle, clearing the file
-    whenever it's missing, garbled, or points at a dead process."""
-
-    def __init__(self, path):
-        self.path = path
-
-    @staticmethod
-    def alive(p):
-        """True if process p exists (portable replacement for /proc/<pid>)."""
-        try:
-            os.kill(p, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
-
-    @property
-    def pid(self):
-        """The live PID, or None. A stale file reads as None; qemu's -pidfile
-        takes a lock and overwrites it on the next start."""
-        try:
-            p = int(self.path.read_text())
-        except (FileNotFoundError, ValueError):
-            return None
-        return p if self.alive(p) else None
-
-    def terminate(self, timeout=30):
-        """SIGTERM the process, escalating to SIGKILL after `timeout` seconds,
-        then clear the file. Returns False if nothing was running."""
-        p = self.pid
-        if p is None:
-            return False
-        os.kill(p, signal.SIGTERM)
-        for _ in range(timeout):
-            if not self.alive(p):
-                break
-            time.sleep(1)
-        else:
-            os.kill(p, signal.SIGKILL)
-        self.path.unlink(missing_ok=True)
-        return True
+def alive(pid):
+    """True if the process exists (portable replacement for /proc/<pid>)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
 
 
-qemu = PidFile(PIDFILE)
+def vm_pid():
+    """The live QEMU PID, or None. A stale pidfile reads as None; qemu's
+    -pidfile takes a lock and overwrites it on the next start."""
+    try:
+        pid = int(PIDFILE.read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+    return pid if alive(pid) else None
+
+
+def terminate(timeout=30):
+    """SIGTERM the VM, escalating to SIGKILL after `timeout` seconds, then
+    clear the pidfile. Returns False if nothing was running."""
+    pid = vm_pid()
+    if pid is None:
+        return False
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(timeout):
+        if not alive(pid):
+            break
+        time.sleep(1)
+    else:
+        os.kill(pid, signal.SIGKILL)
+    PIDFILE.unlink(missing_ok=True)
+    return True
 
 
 def pubkey():
@@ -116,45 +104,33 @@ def pubkey():
     return key.with_suffix(".pub")
 
 
-def private_key():
-    return pubkey().with_suffix("")
-
-
-@dataclass
-class Dep:
-    check: Callable[[], object]  # truthy when already present
-    apt: str  # Debian/Ubuntu package
-    brew: str  # Homebrew formula
-
-
-# The host dependencies needed to run a VM, each with its per-platform package.
+# The host dependencies needed to run a VM, as
+# (check: truthy when already present, apt package, brew formula).
 DEPS = [
-    Dep(
+    (
         lambda: shutil.which(QEMU),
         "qemu-system-x86" if ARCH == "amd64" else "qemu-system-arm",
         "qemu",
     ),
-    Dep(lambda: shutil.which("qemu-img"), "qemu-utils", "qemu"),
-    Dep(lambda: shutil.which("xorriso"), "xorriso", "xorriso"),
+    (lambda: shutil.which("qemu-img"), "qemu-utils", "qemu"),
+    (lambda: shutil.which("xorriso"), "xorriso", "xorriso"),
     # arm64 guests boot via UEFI. Linux needs the AAVMF firmware package; on
     # macOS the Homebrew qemu formula already bundles the edk2 firmware.
-    Dep(
-        lambda: MACOS or ARCH != "arm64" or uefi().exists(), "qemu-efi-aarch64", "qemu"
-    ),
+    (lambda: MACOS or ARCH != "arm64" or uefi().exists(), "qemu-efi-aarch64", "qemu"),
 ]
 
 
 def setup_deps():
     """Install any missing host packages needed to run the VM."""
-    missing = [d for d in DEPS if not d.check()]
+    missing = [(apt, brew) for check, apt, brew in DEPS if not check()]
     if not missing:
         return
     if MACOS:
-        system("brew", "install", *dict.fromkeys(d.brew for d in missing))
+        system("brew", "install", *dict.fromkeys(brew for _, brew in missing))
     else:
         system("sudo", "apt-get", "update")
         system(
-            "sudo", "apt-get", "install", "-y", *dict.fromkeys(d.apt for d in missing)
+            "sudo", "apt-get", "install", "-y", *dict.fromkeys(apt for apt, _ in missing)
         )
 
 
@@ -236,8 +212,8 @@ def setup():
 
 
 def start():
-    if p := qemu.pid:
-        print(f"VM already running (pid {p})")
+    if pid := vm_pid():
+        print(f"VM already running (pid {pid})")
     else:
         setup()
         machine = "q35" if ARCH == "amd64" else "virt"
@@ -279,7 +255,7 @@ def start():
 
 
 def stop():
-    print("VM stopped" if qemu.terminate() else "VM not running")
+    print("VM stopped" if terminate() else "VM not running")
 
 
 def restart():
@@ -301,7 +277,7 @@ def ssh():
         "-p",
         SSH_PORT,
         "-i",
-        private_key(),
+        pubkey().with_suffix(""),
         "-o",
         "StrictHostKeyChecking=no",
         "-o",

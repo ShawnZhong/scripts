@@ -1,13 +1,8 @@
 Setup scripts for a fresh Ubuntu machine.
 
-Setup fish shell:
+Setup fish, git, and Claude Code settings (no commit/PR attribution):
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/fish.sh)
-```
-
-Setup git
-```sh
-curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/git.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/setup.sh)
 ```
 
 CloudLab repartition:

@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 CPUS = os.cpu_count()
-MEM = 16384  # MB
+MEM = 32 * 1024  # MB
 DISK = "64G"
 SSH_PORT = "2200"
 USER = "ubuntu"

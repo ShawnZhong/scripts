@@ -10,11 +10,6 @@ Setup git
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/git.sh | bash
 ```
 
-Setup Claude Code
-```sh
-curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/claude.sh | bash
-```
-
 CloudLab repartition:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/repartition.py | sudo python3

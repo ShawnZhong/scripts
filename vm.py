@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -13,46 +14,49 @@ from pathlib import Path
 CPUS = os.cpu_count()
 MEM = 32 * 1024  # MB
 DISK = "64G"
-SSH_PORT = "2200"
 USER = "ubuntu"
 HOSTNAME = "ubuntu-vm"
 
+# macOS runs the VM under vfkit (Virtualization.framework), Linux under QEMU.
 MACOS = platform.system() == "Darwin"
 
 HOST = platform.machine()
-ARCH, QEMU = {
-    "x86_64": ("amd64", "qemu-system-x86_64"),
-    "aarch64": ("arm64", "qemu-system-aarch64"),
-    "arm64": ("arm64", "qemu-system-aarch64"),
-}.get(HOST) or sys.exit(f"Unsupported host architecture: {HOST}")
+ARCH = {"x86_64": "amd64", "arm64": "arm64"}.get(HOST) or sys.exit(
+    f"Unsupported host architecture: {HOST}"
+)
 
 IMG_URL = f"https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-{ARCH}.img"
 
 VM_DIR = Path("vm").resolve()
 BASE = VM_DIR / Path(IMG_URL).name
-DISK_IMG = VM_DIR / "disk.qcow2"
-SEED = VM_DIR / "seed.img"
-PIDFILE = VM_DIR / "qemu.pid"
-CONSOLE = VM_DIR / "console.log"
+DISK_IMG = VM_DIR / "disk.raw"
+SEED = VM_DIR / "seed.img"  # cloud-init NoCloud ISO, built from SEED_DIR
+SEED_DIR = VM_DIR / "seed"
+PIDFILE = VM_DIR / "vm.pid"
+CONSOLE = VM_DIR / "console.log"  # guest serial console
+VM_LOG = VM_DIR / "vm.log"  # the hypervisor's own output
+SSH_CONFIG = VM_DIR / "ssh_config"
+EFI_VARS = VM_DIR / "efi-vars"  # vfkit only: its EFI boot requires a store
+
+# vfkit only: vmnet's default NAT subnet (the host is .1) and the static IP the
+# guest takes in it, so the host can reach it without asking DHCP.
+SUBNET = "192.168.64"
+GUEST_IP = f"{SUBNET}.200"
+# QEMU only: the localhost port its user-mode networking forwards to sshd.
+SSH_PORT = "2200"
 
 SSH_DIR = Path.home() / ".ssh"
 
 
+def echo(cmd):
+    """Print `cmd` shell-style and return it as strings, ready to run."""
+    cmd = [str(c) for c in cmd]
+    print("+", *cmd, flush=True)
+    return cmd
+
+
 def system(*cmd, check=True):
-    print(f"+ {' '.join(map(str, cmd))}", flush=True)
-    subprocess.run([str(c) for c in cmd], check=check)
-
-
-def uefi():
-    """Return the arm64 UEFI firmware image, loaded via -bios to boot the guest.
-    On macOS it ships with the Homebrew qemu formula; on Linux with AAVMF.
-    Variables are volatile (no NVRAM store), which a cloud image doesn't need."""
-    if MACOS:
-        out = subprocess.run(
-            ["brew", "--prefix", "qemu"], capture_output=True, text=True, check=True
-        )
-        return Path(out.stdout.strip()) / "share" / "qemu" / "edk2-aarch64-code.fd"
-    return Path("/usr/share/AAVMF/AAVMF_CODE.fd")
+    subprocess.run(echo(cmd), check=check)
 
 
 def alive(pid):
@@ -61,14 +65,12 @@ def alive(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
-        pass
     return True
 
 
 def vm_pid():
-    """The live QEMU PID, or None. A stale pidfile reads as None; qemu's
-    -pidfile takes a lock and overwrites it on the next start."""
+    """The live VM process's PID, or None. A stale pidfile reads as None and
+    is overwritten on the next start, so it never needs deleting."""
     try:
         pid = int(PIDFILE.read_text())
     except (FileNotFoundError, ValueError):
@@ -76,21 +78,22 @@ def vm_pid():
     return pid if alive(pid) else None
 
 
-def terminate(timeout=30):
-    """SIGTERM the VM, escalating to SIGKILL after `timeout` seconds, then
-    clear the pidfile. Returns False if nothing was running."""
-    pid = vm_pid()
-    if pid is None:
-        return False
-    os.kill(pid, signal.SIGTERM)
-    for _ in range(timeout):
-        if not alive(pid):
-            break
-        time.sleep(1)
-    else:
-        os.kill(pid, signal.SIGKILL)
-    PIDFILE.unlink(missing_ok=True)
-    return True
+def spawn(cmd):
+    """Run the hypervisor detached in its own session so it outlives this
+    script, logging to VM_LOG and recording its PID in PIDFILE."""
+    with VM_LOG.open("w") as log:
+        proc = subprocess.Popen(
+            echo(cmd),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    PIDFILE.write_text(str(proc.pid))
+    # Bad arguments or a failed VM start make the hypervisor exit right away.
+    time.sleep(1)
+    if proc.poll() is not None:
+        sys.exit(f"VM exited with status {proc.returncode} (see {VM_LOG})")
 
 
 def pubkey():
@@ -104,40 +107,34 @@ def pubkey():
     return key.with_suffix(".pub")
 
 
-# The host dependencies needed to run a VM, as
-# (check: truthy when already present, apt package, brew formula).
-DEPS = [
-    (
-        lambda: shutil.which(QEMU),
-        "qemu-system-x86" if ARCH == "amd64" else "qemu-system-arm",
-        "qemu",
-    ),
-    (lambda: shutil.which("qemu-img"), "qemu-utils", "qemu"),
-    (lambda: shutil.which("xorriso"), "xorriso", "xorriso"),
-    # arm64 guests boot via UEFI. Linux needs the AAVMF firmware package; on
-    # macOS the Homebrew qemu formula already bundles the edk2 firmware.
-    (lambda: MACOS or ARCH != "arm64" or uefi().exists(), "qemu-efi-aarch64", "qemu"),
-]
+# The host commands needed to run a VM, mapped to the package providing each:
+# Homebrew formulae on macOS, apt packages on Linux.
+if MACOS:
+    DEPS = {"vfkit": "vfkit", "qemu-img": "qemu", "xorriso": "xorriso"}
+else:
+    DEPS = {
+        "qemu-system-x86_64": "qemu-system-x86",
+        "qemu-img": "qemu-utils",
+        "xorriso": "xorriso",
+    }
 
 
 def setup_deps():
     """Install any missing host packages needed to run the VM."""
-    missing = [(apt, brew) for check, apt, brew in DEPS if not check()]
+    missing = [pkg for cmd, pkg in DEPS.items() if not shutil.which(cmd)]
     if not missing:
         return
     if MACOS:
-        system("brew", "install", *dict.fromkeys(brew for _, brew in missing))
+        system("brew", "install", *missing)
     else:
         system("sudo", "apt-get", "update")
-        system(
-            "sudo", "apt-get", "install", "-y", *dict.fromkeys(apt for apt, _ in missing)
-        )
+        system("sudo", "apt-get", "install", "-y", *missing)
 
 
 def setup_kvm():
     """Relax /dev/kvm (root:kvm 0660) so this user can use KVM without root.
-    Resets on reboot, but runs on every start, so it self-heals. macOS
-    accelerates with Hypervisor.framework, which needs no device permission."""
+    Resets on reboot, but runs on every start, so it self-heals. vfkit on
+    macOS needs no device permission."""
     if MACOS:
         return
     KVM = Path("/dev/kvm")
@@ -148,44 +145,44 @@ def setup_kvm():
 
 
 def setup_disk():
-    """Download the cloud image and create this VM's copy-on-write overlay."""
+    """Download the cloud image and expand it into this VM's disk. Raw is the
+    one format both QEMU and vfkit read; the file is sparse, so space is only
+    used as the guest writes."""
     if not BASE.exists():
         system("curl", "-fL", "-o", BASE, IMG_URL)
 
     if not DISK_IMG.exists():
-        system(
-            "qemu-img",
-            "create",
-            "-f",
-            "qcow2",
-            "-F",
-            "qcow2",
-            "-b",
-            BASE,
-            DISK_IMG,
-            DISK,
-        )
+        system("qemu-img", "convert", "-O", "raw", BASE, DISK_IMG)
+        system("qemu-img", "resize", "-f", "raw", DISK_IMG, DISK)
 
 
 def setup_seed():
     """Build the cloud-init NoCloud seed ISO carrying the host's SSH key."""
     if SEED.exists():
         return
-    key = pubkey().read_text().strip()
-    user_data = VM_DIR / "user-data"
-    user_data.write_text(
-        "#cloud-config\n"
-        f"hostname: {HOSTNAME}\n"
-        "ssh_pwauth: false\n"
-        "users:\n"
-        f"  - name: {USER}\n"
-        "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
-        "    shell: /bin/bash\n"
-        "    ssh_authorized_keys:\n"
-        f"      - {key}\n"
-    )
-    meta_data = VM_DIR / "meta-data"
-    meta_data.write_text(f"instance-id: {HOSTNAME}\nlocal-hostname: {HOSTNAME}\n")
+    # Written as JSON, which YAML parsers (and so cloud-init) accept as is.
+    if MACOS:
+        nic = {
+            "addresses": [f"{GUEST_IP}/24"],
+            "routes": [{"to": "default", "via": f"{SUBNET}.1"}],
+            "nameservers": {"addresses": [f"{SUBNET}.1"]},
+        }
+    else:
+        nic = {"dhcp4": True}
+    files = {
+        # USER is the image's default user, which already has sudo and bash.
+        "user-data": "#cloud-config\n"
+        + json.dumps({"ssh_authorized_keys": [pubkey().read_text().strip()]}),
+        "meta-data": json.dumps({"instance-id": HOSTNAME, "local-hostname": HOSTNAME}),
+        # Match the NIC by name: cloud-init's default config pins the first
+        # boot's MAC, and vfkit picks a new random MAC on every start.
+        "network-config": json.dumps(
+            {"version": 2, "ethernets": {"nic": {"match": {"name": "en*"}, **nic}}}
+        ),
+    }
+    SEED_DIR.mkdir(exist_ok=True)
+    for name, text in files.items():
+        (SEED_DIR / name).write_text(text)
     # The NoCloud datasource requires the volume label to be "cidata".
     system(
         "xorriso",
@@ -197,18 +194,83 @@ def setup_seed():
         "cidata",
         "-joliet",
         "-rock",
-        user_data,
-        meta_data,
+        SEED_DIR,
+    )
+
+
+def setup_ssh_config():
+    """Write an ssh config for the guest, which `ssh` uses and which also
+    works by hand (`ssh -F vm/ssh_config ubuntu-vm`) or via an Include in
+    ~/.ssh/config. Host keys aren't checked: each reset makes new ones."""
+    host, port = (GUEST_IP, 22) if MACOS else ("localhost", SSH_PORT)
+    SSH_CONFIG.write_text(
+        f"Host {HOSTNAME}\n"
+        f"  HostName {host}\n"
+        f"  Port {port}\n"
+        f"  User {USER}\n"
+        "  StrictHostKeyChecking no\n"
+        "  UserKnownHostsFile /dev/null\n"
+        "  LogLevel ERROR\n"
     )
 
 
 def setup():
-    """Run every setup step: deps, KVM, disk, and seed."""
-    VM_DIR.mkdir(parents=True, exist_ok=True)
+    """Run every setup step: deps, KVM, disk, seed, and ssh config."""
+    VM_DIR.mkdir(exist_ok=True)
     setup_deps()
     setup_kvm()
     setup_disk()
     setup_seed()
+    setup_ssh_config()
+
+
+def qemu_cmd():
+    """QEMU with KVM (if usable) and user-mode networking, which forwards
+    localhost:SSH_PORT to the guest's sshd."""
+    return [
+        "qemu-system-x86_64",
+        "-machine",
+        "type=q35,accel=kvm:tcg",
+        "-cpu",
+        "max",
+        "-smp",
+        CPUS,
+        "-m",
+        MEM,
+        "-display",
+        "none",
+        "-serial",
+        f"file:{CONSOLE}",
+        "-drive",
+        f"if=virtio,format=raw,file={DISK_IMG}",
+        "-drive",
+        f"if=virtio,format=raw,file={SEED}",
+        "-device",
+        "virtio-net-pci,netdev=net0",
+        "-netdev",
+        f"user,id=net0,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
+    ]
+
+
+def vfkit_cmd():
+    """vfkit with vmnet NAT networking; the guest sits at GUEST_IP."""
+    return [
+        "vfkit",
+        "--cpus",
+        CPUS,
+        "--memory",
+        MEM,
+        "--bootloader",
+        f"efi,variable-store={EFI_VARS},create",
+        "--device",
+        f"virtio-blk,path={DISK_IMG}",
+        "--device",
+        f"virtio-blk,path={SEED}",
+        "--device",
+        "virtio-net,nat",
+        "--device",
+        f"virtio-serial,logFilePath={CONSOLE}",
+    ]
 
 
 def start():
@@ -216,106 +278,54 @@ def start():
         print(f"VM already running (pid {pid})")
     else:
         setup()
-        machine = "q35" if ARCH == "amd64" else "virt"
-        # macOS accelerates with Hypervisor.framework, Linux with KVM. HVF
-        # requires -cpu host; -cpu max works under TCG/KVM but not HVF.
-        accel = "hvf:tcg" if MACOS else "kvm:tcg"
-        cpu = "host" if MACOS else "max"
-        cmd = [
-            QEMU,
-            "-name",
-            HOSTNAME,
-            "-machine",
-            f"type={machine},accel={accel}",
-            "-cpu",
-            cpu,
-            "-smp",
-            CPUS,
-            "-m",
-            MEM,
-            "-display",
-            "none",
-            "-serial",
-            f"file:{CONSOLE}",
-            "-drive",
-            f"if=virtio,format=qcow2,file={DISK_IMG}",
-            "-drive",
-            f"if=virtio,format=raw,file={SEED}",
-            "-device",
-            "virtio-net-pci,netdev=net0",
-            "-netdev",
-            f"user,id=net0,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22",
-            "-pidfile",
-            PIDFILE,
-            "-daemonize",
-        ]
-        if ARCH == "arm64":
-            cmd += ["-bios", str(uefi())]  # UEFI firmware to boot the guest
-        system(*cmd)
+        spawn(vfkit_cmd() if MACOS else qemu_cmd())
 
 
 def stop():
-    print("VM stopped" if terminate() else "VM not running")
-
-
-def restart():
-    stop()
-    start()
+    """SIGTERM the VM (both hypervisors exit at once, pulling the plug) and
+    wait for it to go."""
+    pid = vm_pid()
+    if pid is None:
+        print("VM not running")
+        return
+    os.kill(pid, signal.SIGTERM)
+    while alive(pid):
+        time.sleep(0.1)
+    print("VM stopped")
 
 
 def reset():
-    """Wipe VM state (disk + seed) but keep the downloaded base image."""
+    """Stop the VM and delete everything in VM_DIR but the downloaded base
+    image; the next start sets the VM up afresh."""
     stop()
-    for f in (DISK_IMG, SEED, CONSOLE):
-        f.unlink(missing_ok=True)
-    setup()
+    for f in VM_DIR.glob("*"):
+        if f.is_dir():
+            shutil.rmtree(f)
+        elif f != BASE:
+            f.unlink()
 
 
 def ssh():
-    """Wait for the guest's sshd to come up, then open an interactive shell."""
-    target = [
-        "-p",
-        SSH_PORT,
-        "-i",
-        pubkey().with_suffix(""),
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "LogLevel=ERROR",
-        f"{USER}@localhost",
-    ]
-
-    print("Waiting for SSH...", flush=True)
-    for _ in range(120):
-        probe = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=2", *target, "true"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if probe.returncode == 0:
-            break
-        time.sleep(2)
-    else:
-        sys.exit(f"Timed out waiting for SSH (see {CONSOLE})")
-
+    """Open a shell in the guest, retrying the connection while it boots."""
     # check=False: exiting the shell with a nonzero status is normal, not an error.
-    system("ssh", *target, check=False)
+    system(
+        "ssh",
+        "-F",
+        SSH_CONFIG,
+        "-o",
+        "ConnectionAttempts=120",
+        "-o",
+        "ConnectTimeout=2",
+        HOSTNAME,
+        check=False,
+    )
 
 
 def main():
-    cmds = {
-        "setup": setup,
-        "start": start,
-        "ssh": ssh,
-        "stop": stop,
-        "restart": restart,
-        "reset": reset,
-    }
-    parser = argparse.ArgumentParser(description="Run an Ubuntu cloud image in QEMU.")
+    cmds = {f.__name__: f for f in (setup, start, ssh, stop, reset)}
+    parser = argparse.ArgumentParser(
+        description="Run an Ubuntu cloud image in a VM (vfkit on macOS, QEMU on Linux)."
+    )
     parser.add_argument(
         "command",
         nargs="?",

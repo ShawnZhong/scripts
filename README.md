@@ -10,12 +10,13 @@ CloudLab repartition:
 curl -fsSL https://raw.githubusercontent.com/ShawnZhong/scripts/refs/heads/main/repartition.py | sudo python3
 ```
 
-Run an Ubuntu cloud image in QEMU (data lives in `./vm`, SSH in after boot):
+Run an Ubuntu cloud image in a VM: vfkit on macOS, QEMU on Linux x86_64 (data lives in `./vm`, SSH in after boot):
 
 ```sh
 ./vm.py setup    # install deps, set up KVM, download image, build seed
-./vm.py start    # boot (daemonized) and SSH in; runs setup if needed
+./vm.py          # start, then SSH in
+./vm.py start    # boot in the background; runs setup if needed
+./vm.py ssh      # wait for the guest's sshd, then SSH in
 ./vm.py stop     # shut the VM down
-./vm.py restart  # stop, then start
-./vm.py reset    # wipe disk + seed (keeps the downloaded base image)
+./vm.py reset    # stop and wipe the VM (keeps the downloaded base image)
 ```

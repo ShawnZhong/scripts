@@ -20,3 +20,5 @@ Run an Ubuntu cloud image in a VM: vfkit on macOS, QEMU on Linux x86_64 (data li
 ./vm.py stop     # shut the VM down
 ./vm.py reset    # stop and wipe the VM (keeps the downloaded base image)
 ```
+
+To `ssh ubuntu-vm` from anywhere, add `Include ~/Code/scripts/vm/*/ssh_config` at the top of `~/.ssh/config`.

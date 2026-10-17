@@ -26,26 +26,31 @@ ARCH = {"x86_64": "amd64", "arm64": "arm64"}.get(HOST) or sys.exit(
     f"Unsupported host architecture: {HOST}"
 )
 
-IMG_URL = f"https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-{ARCH}.img"
+IMG_URL = f"https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-{ARCH}.img"
 
 VM_DIR = Path("vm").resolve()
-BASE = VM_DIR / Path(IMG_URL).name
-DISK_IMG = VM_DIR / "disk.raw"
-SEED = VM_DIR / "seed.img"  # cloud-init seed ISO, built from SEED_DIR
-SEED_DIR = VM_DIR / "seed"
-PIDFILE = VM_DIR / "vm.pid"
-CONSOLE = VM_DIR / "console.log"  # guest serial output
-VM_LOG = VM_DIR / "vm.log"  # hypervisor output
-SSH_CONFIG = VM_DIR / "ssh_config"
-EFI_VARS = VM_DIR / "efi-vars"  # vfkit only; required for EFI boot
+BASE = VM_DIR / Path(IMG_URL).name  # shared base image, kept by reset
+
+# This VM's files, all deleted by reset.
+INSTANCE = VM_DIR / HOSTNAME
+DISK_IMG = INSTANCE / "disk.raw"
+EFI_VARS = INSTANCE / "efi-vars"  # vfkit only; required for EFI boot
+SEED_DIR = INSTANCE / "seed"  # cloud-init config
+SEED = INSTANCE / "seed.img"  # ...packed into the ISO cloud-init reads
+SSH_KEY = INSTANCE / "id_ed25519"  # this VM's own login key
+SSH_CONFIG = INSTANCE / "ssh_config"
+
+# Per-boot files, overwritten on each start.
+RUN_DIR = INSTANCE / "run"
+PIDFILE = RUN_DIR / "vm.pid"
+CONSOLE = RUN_DIR / "console.log"  # guest serial output
+VM_LOG = RUN_DIR / "vm.log"  # hypervisor output
 
 # vfkit only: the guest's static IP on vmnet's default NAT subnet (host is .1).
 SUBNET = "192.168.64"
 GUEST_IP = f"{SUBNET}.200"
 # The guest's sshd as the host sees it; QEMU forwards a localhost port to it.
 SSH_HOST, SSH_PORT = (GUEST_IP, 22) if MACOS else ("localhost", 2200)
-
-SSH_DIR = Path.home() / ".ssh"
 
 
 def echo(cmd):
@@ -92,17 +97,6 @@ def spawn(cmd):
     time.sleep(1)
     if proc.poll() is not None:
         sys.exit(f"VM exited with status {proc.returncode} (see {VM_LOG})")
-
-
-def pubkey():
-    """The host's SSH public key file, generated if missing."""
-    for name in ("id_ed25519", "id_rsa"):
-        pub = SSH_DIR / f"{name}.pub"
-        if pub.exists():
-            return pub
-    key = SSH_DIR / "id_ed25519"
-    system("ssh-keygen", "-t", "ed25519", "-N", "", "-C", "vm.py", "-f", key)
-    return key.with_suffix(".pub")
 
 
 # Host commands needed, mapped to the Homebrew/apt package providing each.
@@ -154,6 +148,9 @@ def setup_seed():
     """Build the cloud-init seed ISO."""
     if SEED.exists():
         return
+    if not SSH_KEY.exists():
+        system("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", SSH_KEY)
+    pubkey = SSH_KEY.with_suffix(".pub").read_text()
     # Written as JSON, which is valid YAML.
     if MACOS:
         nic = {
@@ -166,7 +163,7 @@ def setup_seed():
     files = {
         # USER is the image's default user, with sudo and bash already.
         "user-data": "#cloud-config\n"
-        + json.dumps({"ssh_authorized_keys": [pubkey().read_text().strip()]}),
+        + json.dumps({"ssh_authorized_keys": [pubkey]}),
         "meta-data": json.dumps({"instance-id": HOSTNAME, "local-hostname": HOSTNAME}),
         # Match the NIC by name, since vfkit picks a new MAC every start.
         "network-config": json.dumps(
@@ -192,23 +189,27 @@ def setup_seed():
 
 
 def setup_ssh_config():
-    """Write an ssh config for the guest, also usable by hand:
-    `ssh -F vm/ssh_config ubuntu-vm`. Host keys change on every reset, so
-    they aren't checked."""
+    """Write an ssh config for the guest, also usable by hand or through
+    `Include .../vm/*/ssh_config` in ~/.ssh/config. Host keys change on every
+    reset, so they aren't checked, and connections aren't shared, since a
+    stopped VM would leave the shared one hanging."""
     SSH_CONFIG.write_text(
         f"Host {HOSTNAME}\n"
         f"  HostName {SSH_HOST}\n"
         f"  Port {SSH_PORT}\n"
         f"  User {USER}\n"
+        f"  IdentityFile {SSH_KEY}\n"
+        "  IdentitiesOnly yes\n"
         "  StrictHostKeyChecking no\n"
         "  UserKnownHostsFile /dev/null\n"
         "  LogLevel ERROR\n"
+        "  ControlPath none\n"
     )
 
 
 def setup():
     """Prepare everything `start` needs."""
-    VM_DIR.mkdir(exist_ok=True)
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
     setup_deps()
     setup_kvm()
     setup_disk()
@@ -285,13 +286,9 @@ def stop():
 
 
 def reset():
-    """Stop the VM and delete everything but the base image."""
+    """Stop the VM and delete its files, keeping the base image."""
     stop()
-    for f in VM_DIR.glob("*"):
-        if f.is_dir():
-            shutil.rmtree(f)
-        elif f != BASE:
-            f.unlink()
+    shutil.rmtree(INSTANCE, ignore_errors=True)
 
 
 def sshd_up():

@@ -52,6 +52,16 @@ GUEST_IP = f"{SUBNET}.200"
 # The guest's sshd as the host sees it; QEMU forwards a localhost port to it.
 SSH_HOST, SSH_PORT = (GUEST_IP, 22) if MACOS else ("localhost", 2200)
 
+# Host commands needed, mapped to the Homebrew/apt package providing each.
+if MACOS:
+    DEPS = {"vfkit": "vfkit", "qemu-img": "qemu", "xorriso": "xorriso"}
+else:
+    DEPS = {
+        "qemu-system-x86_64": "qemu-system-x86",
+        "qemu-img": "qemu-utils",
+        "xorriso": "xorriso",
+    }
+
 
 def echo(cmd):
     """Print `cmd` and return it as strings, ready to run."""
@@ -80,34 +90,6 @@ def vm_pid():
     except (FileNotFoundError, ValueError):
         return None
     return pid if alive(pid) else None
-
-
-def spawn(cmd):
-    """Start the hypervisor in the background, logging to VM_LOG."""
-    with VM_LOG.open("w") as log:
-        proc = subprocess.Popen(
-            echo(cmd),
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    PIDFILE.write_text(str(proc.pid))
-    # A bad config makes the hypervisor exit at once.
-    time.sleep(1)
-    if proc.poll() is not None:
-        sys.exit(f"VM exited with status {proc.returncode} (see {VM_LOG})")
-
-
-# Host commands needed, mapped to the Homebrew/apt package providing each.
-if MACOS:
-    DEPS = {"vfkit": "vfkit", "qemu-img": "qemu", "xorriso": "xorriso"}
-else:
-    DEPS = {
-        "qemu-system-x86_64": "qemu-system-x86",
-        "qemu-img": "qemu-utils",
-        "xorriso": "xorriso",
-    }
 
 
 def setup_deps():
@@ -161,9 +143,15 @@ def setup_seed():
     else:
         nic = {"dhcp4": True}
     files = {
-        # USER is the image's default user, with sudo and bash already.
+        # USER is the image's default user, with sudo and bash already; add it
+        # to kvm too, for nested VMs.
         "user-data": "#cloud-config\n"
-        + json.dumps({"ssh_authorized_keys": [pubkey]}),
+        + json.dumps(
+            {
+                "users": ["default", {"name": USER, "groups": "kvm"}],
+                "ssh_authorized_keys": [pubkey],
+            }
+        ),
         "meta-data": json.dumps({"instance-id": HOSTNAME, "local-hostname": HOSTNAME}),
         # Match the NIC by name, since vfkit picks a new MAC every start.
         "network-config": json.dumps(
@@ -207,16 +195,6 @@ def setup_ssh_config():
     )
 
 
-def setup():
-    """Prepare everything `start` needs."""
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-    setup_deps()
-    setup_kvm()
-    setup_disk()
-    setup_seed()
-    setup_ssh_config()
-
-
 def qemu_cmd():
     """QEMU, forwarding localhost:SSH_PORT to the guest's sshd."""
     return [
@@ -252,6 +230,7 @@ def vfkit_cmd():
         CPUS,
         "--memory",
         MEM,
+        "--nested",  # expose EL2 so the guest gets /dev/kvm (M3+, macOS 15+)
         "--bootloader",
         f"efi,variable-store={EFI_VARS},create",
         "--device",
@@ -263,32 +242,6 @@ def vfkit_cmd():
         "--device",
         f"virtio-serial,logFilePath={CONSOLE}",
     ]
-
-
-def start():
-    if pid := vm_pid():
-        print(f"VM already running (pid {pid})")
-    else:
-        setup()
-        spawn(vfkit_cmd() if MACOS else qemu_cmd())
-
-
-def stop():
-    """SIGTERM the VM, which pulls the plug, and wait for it to exit."""
-    pid = vm_pid()
-    if pid is None:
-        print("VM not running")
-        return
-    os.kill(pid, signal.SIGTERM)
-    while alive(pid):
-        time.sleep(0.1)
-    print("VM stopped")
-
-
-def reset():
-    """Stop the VM and delete its files, keeping the base image."""
-    stop()
-    shutil.rmtree(INSTANCE, ignore_errors=True)
 
 
 def sshd_up():
@@ -315,8 +268,58 @@ def ssh():
     system("ssh", "-F", SSH_CONFIG, HOSTNAME, check=False)
 
 
+def start():
+    if pid := vm_pid():
+        print(f"VM already running (pid {pid})")
+        return
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    setup_deps()
+    setup_kvm()
+    setup_disk()
+    setup_seed()
+    setup_ssh_config()
+    # Run the hypervisor in its own session so it outlives this script.
+    with VM_LOG.open("w") as log:
+        proc = subprocess.Popen(
+            echo(vfkit_cmd() if MACOS else qemu_cmd()),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    PIDFILE.write_text(str(proc.pid))
+    # A bad config makes the hypervisor exit at once.
+    time.sleep(1)
+    if proc.poll() is not None:
+        sys.exit(f"VM exited with status {proc.returncode} (see {VM_LOG})")
+
+
+def stop():
+    """SIGTERM the VM, which pulls the plug, and wait for it to exit."""
+    pid = vm_pid()
+    if pid is None:
+        print("VM not running")
+        return
+    os.kill(pid, signal.SIGTERM)
+    while alive(pid):
+        time.sleep(0.1)
+    print("VM stopped")
+
+
+def restart():
+    stop()
+    start()
+
+
+def reset():
+    """Stop the VM and delete its files, keeping the base image."""
+    stop()
+    shutil.rmtree(INSTANCE, ignore_errors=True)
+    print(f"Deleted {INSTANCE}")
+
+
 def main():
-    cmds = {f.__name__: f for f in (setup, start, ssh, stop, reset)}
+    cmds = {f.__name__: f for f in (start, stop, restart, reset)}
     parser = argparse.ArgumentParser(
         description="Run an Ubuntu VM (vfkit on macOS, QEMU on Linux)."
     )
